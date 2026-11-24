@@ -7196,5 +7196,484 @@ LEMBRETE FINAL ANTES DE RESPONDER: responda apenas com base nos dados acima. Se 
 }
 
 </script>
+  /* ═══════════════════════════════════════════════════════════════════
+   ABA "RAMAIS INTERNOS" — Painel de Atendimento
+   • Dados salvos em homeConfig.ramaisInternos → mesmo canal já usado
+     pelo painel ("salvar_home_config" no Google Sheets / Apps Script).
+   • Sincroniza entre todos os usuários/computadores pelo polling
+     existente (a cada 20s) — sem localStorage, sem banco paralelo.
+   • Somente AdminPro (currentRole === "adminpro") pode editar.
+   • Pode ser colado no Console (F12) OU dentro de <script>...</script>
+     logo antes de </body> no index.html (instalação definitiva).
+   ═══════════════════════════════════════════════════════════════════ */
+(function RamaisInternos(){
+  "use strict";
+  const VERSAO = 1;
+  const KEY = "ramaisInternos";
+
+  // Se já foi instalado nesta página, só re-renderiza.
+  if (window.__ramaisInternos && window.__ramaisInternos.versao >= VERSAO) {
+    window.__ramaisInternos.render();
+    console.log("ℹ️ Ramais Internos já estava instalado — atualizado.");
+    return;
+  }
+
+  /* ─────────────── Acesso seguro às variáveis do painel ─────────────── */
+  const G = {
+    role(){ try { return currentRole; } catch(e){ return null; } },
+    user(){ try { return currentUsername; } catch(e){ return null; } },
+    hc(){ try { return homeConfig; } catch(e){ return null; } },
+    synced(){ try { return _homeConfigSyncedComServidor === true; } catch(e){ return true; } },
+    protegerPoll(){ try { _lastSaveTs = Date.now() + 5000; } catch(e){} },
+    salvar(){ if (typeof salvarHomeConfigStorage === "function") salvarHomeConfigStorage(); },
+    toast(m,t){ if (typeof toast === "function") toast(m, t); else console.log(m); }
+  };
+  const isAdmin = () => G.role() === "adminpro";
+  const uid = () => "r" + Math.random().toString(36).slice(2,9) + Date.now().toString(36).slice(-4);
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim();
+
+  /* ─────────────── Ícones (mesmo traço dos ícones do painel) ─────────────── */
+  const SVG = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const ICONES = {
+    cobranca:      { nome:"Cobrança",          svg: SVG('<rect x="2.5" y="5.5" width="19" height="13" rx="2"/><path d="M2.5 9.5h19"/><path d="M6.5 14.5h3"/>') },
+    relacionamento:{ nome:"Relacionamento",    svg: SVG('<path d="M20.4 5.6a5 5 0 0 0-7.1 0L12 6.9l-1.3-1.3a5 5 0 1 0-7.1 7.1L12 21l8.4-8.3a5 5 0 0 0 0-7.1z"/>') },
+    suporte:       { nome:"Suporte Técnico",   svg: SVG('<path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/><path d="M19 20a3 3 0 0 1-3 2h-3"/>') },
+    agendamento:   { nome:"Agendamento",       svg: SVG('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8.5 14.5l2 2 4-4"/>') },
+    comercial:     { nome:"Comercial",         svg: SVG('<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>') },
+    adm:           { nome:"Administrativo",    svg: SVG('<path d="M4 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16"/><path d="M16 9h3a1 1 0 0 1 1 1v11"/><path d="M8 7h4M8 11h4M8 15h4M2.5 21h19"/>') },
+    manutencao:    { nome:"Manutenção",        svg: SVG('<path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8-1.3-1.3a4 4 0 0 0-5-5L14 2l-1 1"/><path d="M3 21l6-6"/>') },
+    lojas:         { nome:"Lojas",             svg: SVG('<path d="M3.5 9.5L5 4h14l1.5 5.5"/><path d="M3.5 9.5a2.8 2.8 0 0 0 5.6 0 2.8 2.8 0 0 0 5.8 0 2.8 2.8 0 0 0 5.6 0"/><path d="M5 12.5V20h14v-7.5"/><path d="M10 20v-4.5h4V20"/>') },
+    compras:       { nome:"Compras / Fiscal",  svg: SVG('<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h3"/>') },
+    backoffice:    { nome:"Backoffice",        svg: SVG('<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>') },
+    sistemas:      { nome:"Sistemas",          svg: SVG('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><path d="M8.5 10l2 2-2 2M13 13.5h2.5" transform="translate(0,-2)"/>') },
+    telefone:      { nome:"Telefone",          svg: SVG('<path d="M21 16.5v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 1.1 3.7 2 2 0 0 1 3.1 1.5h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L7.1 9.4a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>') },
+    equipe:        { nome:"Equipe",            svg: SVG('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6a5 5 0 0 1 6 4.9"/>') }
+  };
+  const CORES = ["#f59e0b","#ec4899","#3b82f6","#10b981","#8b5cf6","#64748b","#f97316","#06b6d4","#84cc16","#a855f7","#0ea5e9","#ef4444"];
+
+  /* ─────────────── Setores iniciais ─────────────── */
+  const SETORES_INICIAIS = [
+    { nome:"Cobrança",           icone:"cobranca",       fila:"718" },
+    { nome:"Relacionamento",     icone:"relacionamento", fila:"714" },
+    { nome:"Suporte Técnico",    icone:"suporte",        fila:"715" },
+    { nome:"Agendamento",        icone:"agendamento",    fila:"705" },
+    { nome:"Comercial",          icone:"comercial",      fila:"711" },
+    { nome:"ADM",                icone:"adm",            fila:"" },
+    { nome:"Suporte Manutenção", icone:"manutencao",     fila:"" },
+    { nome:"Lojas",              icone:"lojas",          fila:"" },
+    { nome:"Compras / Fiscal",   icone:"compras",        fila:"" },
+    { nome:"Backoffice",         icone:"backoffice",     fila:"" },
+    { nome:"Sistemas",           icone:"sistemas",       fila:"" }
+  ];
+  const novoStoreInicial = () => ({
+    versao: VERSAO,
+    setores: SETORES_INICIAIS.map((s,i)=>({ id: uid(), nome:s.nome, icone:s.icone, cor: CORES[i % CORES.length], fila:s.fila, atendentes: [] }))
+  });
+
+  /* ─────────────── Armazenamento (homeConfig → Sheets) ─────────────── */
+  let _previewLocal = null; // usado apenas para exibir antes do 1º salvamento
+  function lerStore(){
+    const hc = G.hc();
+    const s = hc && hc[KEY];
+    if (s && Array.isArray(s.setores)) return s;
+    if (!_previewLocal) _previewLocal = novoStoreInicial();
+    return _previewLocal;
+  }
+  function storeExisteNoServidor(){ const hc = G.hc(); return !!(hc && hc[KEY] && Array.isArray(hc[KEY].setores)); }
+
+  // Grava no homeConfig e dispara o salvamento já existente do painel.
+  function persistir(store, msgOk){
+    if (!isAdmin()) { G.toast("Somente o AdminPro pode alterar os ramais.", "err"); return false; }
+    if (!G.synced()) { G.toast("Aguarde: o painel ainda está sincronizando com o servidor…", "err"); return false; }
+    const hc = G.hc(); if (!hc) return false;
+    store.versao = VERSAO;
+    store.atualizadoEm = new Date().toISOString();
+    store.atualizadoPor = G.user() || "adminpro";
+    hc[KEY] = store;
+    _previewLocal = null;
+    G.protegerPoll();  // evita que o polling traga a versão antiga enquanto o envio acontece
+    G.salvar();
+    _ultimaAssinatura = assinatura();
+    if (msgOk) G.toast(msgOk, "ok");
+    return true;
+  }
+
+  // Primeira vez que um AdminPro abre a aba: grava os setores iniciais no Sheets.
+  function semearSeNecessario(){
+    if (!isAdmin() || !G.synced() || storeExisteNoServidor()) return;
+    persistir(lerStore(), null);
+    console.log("✅ Ramais Internos: setores iniciais gravados no Sheets.");
+  }
+
+  /* ─────────────── CSS ─────────────── */
+  const CSS = `
+  #ramaisView .ri-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:18px;}
+  #ramaisView .ri-title{font-size:22px;font-weight:800;letter-spacing:-.02em;color:var(--text);display:flex;align-items:center;gap:10px;}
+  #ramaisView .ri-title .ri-ticon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),#2563eb);color:#fff;box-shadow:0 6px 18px var(--accent-glow);}
+  #ramaisView .ri-title .ri-ticon svg{width:20px;height:20px;}
+  #ramaisView .ri-sub{font-size:12.5px;color:var(--text3);margin-top:6px;}
+  #ramaisView .ri-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  #ramaisView .ri-search{position:relative;min-width:260px;flex:1;}
+  #ramaisView .ri-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--text3);pointer-events:none;}
+  #ramaisView .ri-search input{width:100%;padding:11px 36px 11px 38px;border:1.5px solid var(--border2);border-radius:11px;background:var(--surface);color:var(--text);font:inherit;font-size:13.5px;outline:none;transition:.15s;}
+  #ramaisView .ri-search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
+  #ramaisView .ri-search .ri-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:var(--glass-btn-bg);color:var(--text2);border-radius:7px;width:24px;height:24px;cursor:pointer;display:none;}
+  #ramaisView .ri-count{font-size:12px;color:var(--text3);margin:-6px 0 14px;min-height:16px;}
+  #ramaisView .ri-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px;align-items:start;}
+  #ramaisView .ri-card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;transition:transform .15s,box-shadow .15s,border-color .15s;}
+  #ramaisView .ri-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--border2);}
+  #ramaisView .ri-card::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--ri-c);}
+  #ramaisView .ri-ch{display:flex;align-items:center;gap:12px;padding:18px 16px 12px;}
+  #ramaisView .ri-ic{width:42px;height:42px;flex:none;border-radius:12px;display:grid;place-items:center;color:var(--ri-c);background:color-mix(in srgb,var(--ri-c) 16%,transparent);}
+  #ramaisView .ri-ic svg{width:22px;height:22px;}
+  #ramaisView .ri-cn{flex:1;min-width:0;}
+  #ramaisView .ri-cn h4{font-size:15px;font-weight:800;color:var(--text);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #ramaisView .ri-cn span{font-size:11.5px;color:var(--text3);}
+  #ramaisView .ri-mg{display:flex;gap:4px;}
+  #ramaisView .ri-ib{border:none;background:var(--glass-btn-bg);color:var(--text2);width:28px;height:28px;border-radius:8px;cursor:pointer;display:grid;place-items:center;font-size:13px;transition:.15s;}
+  #ramaisView .ri-ib:hover{background:var(--glass-btn-bg-hover);color:var(--text);}
+  #ramaisView .ri-ib.del:hover{background:var(--red-light);color:var(--red);}
+  #ramaisView .ri-fila{margin:0 16px 14px;padding:12px 14px;border-radius:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:linear-gradient(135deg,color-mix(in srgb,var(--ri-c) 20%,transparent),color-mix(in srgb,var(--ri-c) 6%,transparent));border:1px solid color-mix(in srgb,var(--ri-c) 35%,transparent);}
+  #ramaisView .ri-fila small{display:block;font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--text2);}
+  #ramaisView .ri-fila b{display:block;font-family:'DM Mono',monospace;font-size:28px;font-weight:500;line-height:1.1;color:var(--text);letter-spacing:.02em;}
+  #ramaisView .ri-fila.vazia{background:var(--surface2);border:1px dashed var(--border2);}
+  #ramaisView .ri-fila.vazia b{font-size:13px;font-family:inherit;font-weight:600;color:var(--text3);letter-spacing:0;}
+  #ramaisView .ri-copy{border:none;cursor:pointer;background:var(--glass-btn-bg);color:var(--text2);border-radius:8px;padding:6px 9px;font:inherit;font-size:11px;font-weight:700;transition:.15s;}
+  #ramaisView .ri-copy:hover{background:var(--glass-btn-bg-hover);color:var(--text);}
+  #ramaisView .ri-lab{display:flex;align-items:center;justify-content:space-between;padding:0 16px 6px;font-size:10.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--text3);}
+  #ramaisView .ri-list{padding:0 10px 12px;display:flex;flex-direction:column;gap:4px;}
+  #ramaisView .ri-at{display:flex;align-items:center;gap:10px;padding:8px 8px;border-radius:10px;transition:.12s;}
+  #ramaisView .ri-at:hover{background:var(--surface2);}
+  #ramaisView .ri-av{width:30px;height:30px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:800;color:#fff;background:var(--ri-c);opacity:.9;}
+  #ramaisView .ri-an{flex:1;min-width:0;font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #ramaisView .ri-rm{font-family:'DM Mono',monospace;font-size:13.5px;font-weight:500;padding:4px 10px;border-radius:8px;background:var(--surface3);color:var(--text);border:1px solid var(--border);cursor:pointer;white-space:nowrap;}
+  #ramaisView .ri-rm:hover{border-color:var(--ri-c);}
+  #ramaisView .ri-rm.sem{font-family:inherit;font-size:11px;color:var(--text3);cursor:default;}
+  #ramaisView .ri-at .ri-mg{opacity:0;transition:.12s;}
+  #ramaisView .ri-at:hover .ri-mg,#ramaisView .ri-at:focus-within .ri-mg{opacity:1;}
+  @media (hover:none){#ramaisView .ri-at .ri-mg{opacity:1;}}
+  #ramaisView .ri-add{margin:2px 6px 0;padding:10px;border:1.5px dashed var(--border2);border-radius:10px;background:transparent;color:var(--text3);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;transition:.15s;text-align:center;}
+  #ramaisView .ri-add:hover{border-color:var(--ri-c);color:var(--ri-c);background:color-mix(in srgb,var(--ri-c) 7%,transparent);}
+  #ramaisView .ri-empty{margin:2px 6px 0;padding:10px;border:1.5px dashed var(--border);border-radius:10px;color:var(--text3);font-size:12px;text-align:center;}
+  #ramaisView .ri-newsec{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:180px;border:2px dashed var(--border2);border-radius:16px;background:transparent;color:var(--text3);font:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:.15s;}
+  #ramaisView .ri-newsec:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-light);}
+  #ramaisView .ri-newsec span{font-size:26px;line-height:1;}
+  #ramaisView .ri-none{grid-column:1/-1;text-align:center;padding:40px 10px;color:var(--text3);font-size:13px;}
+  #ramaisView mark{background:var(--yellow-light);color:inherit;border-radius:3px;padding:0 1px;box-shadow:0 0 0 1px var(--yellow);}
+  #ramaisModal .ri-icons{display:grid;grid-template-columns:repeat(auto-fill,minmax(42px,1fr));gap:6px;}
+  #ramaisModal .ri-icons button{height:42px;border-radius:10px;border:1.5px solid var(--border2);background:var(--surface2);color:var(--text2);cursor:pointer;display:grid;place-items:center;}
+  #ramaisModal .ri-icons button svg{width:20px;height:20px;}
+  #ramaisModal .ri-icons button.on{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);}
+  #ramaisModal .ri-colors{display:flex;flex-wrap:wrap;gap:6px;}
+  #ramaisModal .ri-colors button{width:26px;height:26px;border-radius:50%;border:2px solid transparent;cursor:pointer;}
+  #ramaisModal .ri-colors button.on{border-color:var(--text);transform:scale(1.1);}
+  @media (max-width:640px){#ramaisView .ri-search{min-width:100%;} #ramaisView .ri-grid{grid-template-columns:1fr;} #ramaisView .ri-title{font-size:19px;}}
+  `;
+
+  /* ─────────────── Montagem da aba (DOM) ─────────────── */
+  function montar(){
+    if (!document.getElementById("ramaisStyle")) {
+      const st = document.createElement("style"); st.id = "ramaisStyle"; st.textContent = CSS;
+      document.head.appendChild(st);
+    }
+    // Botão na barra lateral (visível a todos os usuários logados)
+    if (!document.getElementById("tabRamais")) {
+      const ref = document.getElementById("tabPainel");
+      const btn = document.createElement("button");
+      btn.className = "tab-btn"; btn.id = "tabRamais"; btn.title = "Ramais Internos";
+      btn.innerHTML = `<span class="side-icon hx-icon">${ICONES.telefone.svg}</span><span>Ramais Internos</span>`;
+      btn.addEventListener("click", function(){ showTab("ramais", this); });
+      if (ref && ref.parentNode) ref.parentNode.insertBefore(btn, ref.nextSibling);
+      else { const nav = document.querySelector(".sidebar-nav"); if (nav) nav.appendChild(btn); }
+    }
+    // View
+    if (!document.getElementById("ramaisView")) {
+      const host = document.querySelector(".app-content") || (document.getElementById("pagesView") || {}).parentNode;
+      const v = document.createElement("div");
+      v.id = "ramaisView"; v.style.display = "none";
+      v.innerHTML = `
+        <div class="main">
+          <div class="ri-head">
+            <div>
+              <div class="ri-title"><span class="ri-ticon">${ICONES.telefone.svg}</span>Ramais Internos</div>
+              <div class="ri-sub">Filas gerais e ramais individuais de cada setor. Clique em um número para copiar.</div>
+            </div>
+            <div class="ri-tools">
+              <div class="ri-search">
+                ${SVG('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>')}
+                <input id="riBusca" type="search" placeholder="Buscar setor, atendente ou ramal…" autocomplete="off">
+                <button class="ri-clear" id="riLimpar" title="Limpar">✕</button>
+              </div>
+              <button class="btn-add-user" id="riNovoSetor" style="display:none;">＋ Novo setor</button>
+            </div>
+          </div>
+          <div class="ri-count" id="riCount"></div>
+          <div class="ri-grid" id="riGrid"></div>
+        </div>`;
+      if (host) host.appendChild(v); else document.body.appendChild(v);
+
+      const busca = v.querySelector("#riBusca");
+      busca.addEventListener("input", ()=>{ v.querySelector("#riLimpar").style.display = busca.value ? "block" : "none"; render(); });
+      v.querySelector("#riLimpar").addEventListener("click", ()=>{ busca.value = ""; v.querySelector("#riLimpar").style.display = "none"; render(); busca.focus(); });
+      v.querySelector("#riNovoSetor").addEventListener("click", ()=> abrirModalSetor(null));
+      v.querySelector("#riGrid").addEventListener("click", onGridClick);
+    }
+    // Modal compartilhado (usa o mesmo visual dos modais do painel)
+    if (!document.getElementById("ramaisModal")) {
+      const m = document.createElement("div");
+      m.id = "ramaisModal"; m.className = "modal-backdrop";
+      m.innerHTML = `<div class="modal-card" style="max-width:440px;"><div id="riModalBody"></div></div>`;
+      m.addEventListener("click", e => { if (e.target === m) fecharModal(); });
+      document.body.appendChild(m);
+    }
+  }
+
+  /* ─────────────── Integração com a navegação existente ─────────────── */
+  function integrarNavegacao(){
+    if (typeof window.showTab !== "function" || window.showTab.__ramais) return;
+    const original = window.showTab;
+    const wrapped = function(tab, btn){
+      const r = original.apply(this, arguments);
+      const v = document.getElementById("ramaisView");
+      if (v) v.style.display = tab === "ramais" ? "" : "none";
+      if (tab === "ramais") {
+        try { sessionStorage.setItem("activeTab", "ramais"); } catch(e){}
+        if (!btn) { const b = document.getElementById("tabRamais"); if (b) b.classList.add("active"); }
+        semearSeNecessario();
+        render();
+      }
+      return r;
+    };
+    wrapped.__ramais = true;
+    window.showTab = wrapped;
+  }
+
+  /* ─────────────── Renderização ─────────────── */
+  const hl = (txt, q) => {
+    const t = esc(txt); if (!q) return t;
+    const n = norm(txt); const i = n.indexOf(q);
+    if (i < 0) return t;
+    const raw = String(txt);
+    return esc(raw.slice(0,i)) + "<mark>" + esc(raw.slice(i, i+q.length)) + "</mark>" + esc(raw.slice(i+q.length));
+  };
+  const iniciais = n => String(n||"?").trim().split(/\s+/).slice(0,2).map(p=>p[0]||"").join("").toUpperCase() || "?";
+
+  function visivel(){ const v = document.getElementById("ramaisView"); return v && v.style.display !== "none"; }
+
+  function render(){
+    montar();
+    const grid = document.getElementById("riGrid"); if (!grid) return;
+    const admin = isAdmin();
+    const store = lerStore();
+    const q = norm((document.getElementById("riBusca") || {}).value);
+    document.getElementById("riNovoSetor").style.display = admin ? "" : "none";
+
+    let nSet = 0, nAt = 0, html = "";
+    store.setores.forEach(s => {
+      const atend = s.atendentes || [];
+      const setorBate = !q || norm(s.nome).includes(q) || norm(s.fila).includes(q);
+      const atFiltrados = q && !setorBate ? atend.filter(a => norm(a.nome).includes(q) || norm(a.ramal).includes(q)) : atend;
+      if (q && !setorBate && !atFiltrados.length) return;
+      nSet++; nAt += atFiltrados.length;
+      const cor = s.cor || "#7c5cff";
+      const ic = (ICONES[s.icone] || ICONES.telefone).svg;
+
+      const fila = s.fila
+        ? `<div class="ri-fila"><div><small>Fila geral</small><b>${hl(s.fila, q)}</b></div>
+             <div class="ri-mg">${admin ? `<button class="ri-ib" data-a="fila" data-s="${s.id}" title="Alterar fila geral">✏️</button>` : ""}
+             <button class="ri-copy" data-a="copiar" data-v="${esc(s.fila)}" title="Copiar número">Copiar</button></div></div>`
+        : (admin ? `<div class="ri-fila vazia"><div><small>Fila geral</small><b>Sem fila geral</b></div>
+             <button class="ri-copy" data-a="fila" data-s="${s.id}">＋ Definir</button></div>` : "");
+
+      const lista = atFiltrados.map(a => `
+          <div class="ri-at">
+            <div class="ri-av">${esc(iniciais(a.nome))}</div>
+            <div class="ri-an" title="${esc(a.nome)}">${hl(a.nome, q)}</div>
+            ${a.ramal ? `<button class="ri-rm" data-a="copiar" data-v="${esc(a.ramal)}" title="Copiar ramal">${hl(a.ramal, q)}</button>` : `<span class="ri-rm sem">sem ramal</span>`}
+            ${admin ? `<div class="ri-mg"><button class="ri-ib" data-a="editAt" data-s="${s.id}" data-i="${a.id}" title="Editar">✏️</button><button class="ri-ib del" data-a="delAt" data-s="${s.id}" data-i="${a.id}" title="Excluir">🗑</button></div>` : ""}
+          </div>`).join("");
+
+      const vazio = !atend.length
+        ? (admin ? "" : `<div class="ri-empty">Nenhum atendente cadastrado</div>`)
+        : "";
+      const add = admin && !q ? `<button class="ri-add" data-a="addAt" data-s="${s.id}">＋ Adicionar atendente</button>` : "";
+
+      html += `
+        <div class="ri-card" style="--ri-c:${esc(cor)}">
+          <div class="ri-ch">
+            <div class="ri-ic">${ic}</div>
+            <div class="ri-cn"><h4 title="${esc(s.nome)}">${hl(s.nome, q)}</h4><span>${atend.length} ${atend.length === 1 ? "atendente" : "atendentes"}</span></div>
+            ${admin ? `<div class="ri-mg"><button class="ri-ib" data-a="editSet" data-s="${s.id}" title="Editar setor">✏️</button><button class="ri-ib del" data-a="delSet" data-s="${s.id}" title="Excluir setor">🗑</button></div>` : ""}
+          </div>
+          ${fila}
+          <div class="ri-lab"><span>Ramais individuais</span></div>
+          <div class="ri-list">${lista}${vazio}${add}</div>
+        </div>`;
+    });
+
+    if (!nSet) html = `<div class="ri-none">Nenhum resultado para “${esc((document.getElementById("riBusca")||{}).value)}”.</div>`;
+    if (admin && !q) html += `<button class="ri-newsec" data-a="novoSetor"><span>＋</span>Novo setor</button>`;
+    grid.innerHTML = html;
+
+    const cnt = document.getElementById("riCount");
+    cnt.textContent = q ? `${nSet} ${nSet===1?"setor":"setores"} · ${nAt} ${nAt===1?"atendente":"atendentes"} encontrados` : "";
+    _ultimaAssinatura = assinatura();
+  }
+
+  /* ─────────────── Ações ─────────────── */
+  const achaSetor = (store, id) => store.setores.find(s => s.id === id);
+  function clone(o){ return JSON.parse(JSON.stringify(o)); }
+
+  function onGridClick(e){
+    const b = e.target.closest("[data-a]"); if (!b) return;
+    const a = b.dataset.a, sid = b.dataset.s, iid = b.dataset.i;
+    if (a === "copiar") return copiar(b.dataset.v);
+    if (!isAdmin()) return;
+    if (a === "novoSetor") return abrirModalSetor(null);
+    if (a === "editSet")   return abrirModalSetor(sid);
+    if (a === "fila")      return abrirModalSetor(sid, true);
+    if (a === "delSet")    return excluirSetor(sid);
+    if (a === "addAt")     return abrirModalAtendente(sid, null);
+    if (a === "editAt")    return abrirModalAtendente(sid, iid);
+    if (a === "delAt")     return excluirAtendente(sid, iid);
+  }
+
+  function copiar(v){
+    const ok = () => G.toast(`📋 ${v} copiado!`, "ok");
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(v).then(ok, ()=>fallback());
+    else fallback();
+    function fallback(){ const t=document.createElement("textarea"); t.value=v; document.body.appendChild(t); t.select(); try{document.execCommand("copy"); ok();}catch(e){} t.remove(); }
+  }
+
+  function excluirSetor(sid){
+    const store = clone(lerStore()); const s = achaSetor(store, sid); if (!s) return;
+    const n = (s.atendentes||[]).length;
+    if (!confirm(`Excluir o setor "${s.nome}"${n ? ` e seus ${n} atendente(s)` : ""}? Esta ação não pode ser desfeita.`)) return;
+    store.setores = store.setores.filter(x => x.id !== sid);
+    if (persistir(store, "🗑 Setor excluído.")) render();
+  }
+  function excluirAtendente(sid, iid){
+    const store = clone(lerStore()); const s = achaSetor(store, sid); if (!s) return;
+    const a = (s.atendentes||[]).find(x => x.id === iid); if (!a) return;
+    if (!confirm(`Excluir "${a.nome}" de ${s.nome}?`)) return;
+    s.atendentes = s.atendentes.filter(x => x.id !== iid);
+    if (persistir(store, "🗑 Atendente excluído.")) render();
+  }
+
+  /* ─────────────── Modais ─────────────── */
+  function abrirModal(html, focoId){
+    const m = document.getElementById("ramaisModal");
+    document.getElementById("riModalBody").innerHTML = html;
+    m.classList.add("open");
+    setTimeout(()=>{ const f = document.getElementById(focoId); if (f){ f.focus(); f.select && f.select(); } }, 50);
+    m.onkeydown = e => { if (e.key === "Escape") fecharModal(); if (e.key === "Enter" && e.target.tagName === "INPUT") { const b = m.querySelector(".modal-btn.primary"); b && b.click(); } };
+  }
+  function fecharModal(){ const m = document.getElementById("ramaisModal"); if (m) m.classList.remove("open"); }
+
+  function abrirModalSetor(sid, focoFila){
+    if (!isAdmin()) return;
+    const store = lerStore();
+    const s = sid ? achaSetor(store, sid) : null;
+    let icone = s ? (s.icone || "telefone") : "equipe";
+    let cor = s ? (s.cor || CORES[0]) : CORES[store.setores.length % CORES.length];
+    abrirModal(`
+      <h3>${s ? "Editar setor" : "Novo setor"}</h3>
+      <div class="modal-field"><label>Nome do setor</label><input id="riSNome" maxlength="60" placeholder="ex: Financeiro" value="${esc(s ? s.nome : "")}"></div>
+      <div class="modal-field"><label>Número da fila geral (opcional)</label><input id="riSFila" maxlength="20" inputmode="numeric" placeholder="ex: 720" value="${esc(s ? s.fila : "")}"></div>
+      <div class="modal-field"><label>Ícone</label><div class="ri-icons" id="riSIcons">${Object.keys(ICONES).map(k=>`<button type="button" data-k="${k}" title="${esc(ICONES[k].nome)}" class="${k===icone?"on":""}">${ICONES[k].svg}</button>`).join("")}</div></div>
+      <div class="modal-field"><label>Cor</label><div class="ri-colors" id="riSCores">${CORES.map(c=>`<button type="button" data-c="${c}" style="background:${c}" class="${c===cor?"on":""}"></button>`).join("")}</div></div>
+      <div class="modal-actions">
+        <button class="modal-btn secondary" id="riCancelar">Cancelar</button>
+        <button class="modal-btn primary" id="riSalvarSetor">💾 Salvar</button>
+      </div>`, focoFila ? "riSFila" : "riSNome");
+    const box = document.getElementById("riModalBody");
+    box.querySelector("#riSIcons").onclick = e => { const b = e.target.closest("button"); if(!b) return; icone = b.dataset.k; box.querySelectorAll("#riSIcons button").forEach(x=>x.classList.toggle("on", x===b)); };
+    box.querySelector("#riSCores").onclick = e => { const b = e.target.closest("button"); if(!b) return; cor = b.dataset.c; box.querySelectorAll("#riSCores button").forEach(x=>x.classList.toggle("on", x===b)); };
+    box.querySelector("#riCancelar").onclick = fecharModal;
+    box.querySelector("#riSalvarSetor").onclick = () => {
+      const nome = document.getElementById("riSNome").value.trim();
+      const fila = document.getElementById("riSFila").value.trim();
+      if (!nome) { G.toast("Informe o nome do setor.", "err"); return; }
+      const st = clone(lerStore());
+      if (st.setores.some(x => x.id !== sid && norm(x.nome) === norm(nome))) { G.toast("Já existe um setor com esse nome.", "err"); return; }
+      if (sid) { const x = achaSetor(st, sid); if (!x) return; Object.assign(x, { nome, fila, icone, cor }); }
+      else st.setores.push({ id: uid(), nome, fila, icone, cor, atendentes: [] });
+      if (persistir(st, sid ? "✅ Setor atualizado." : "✅ Setor criado.")) { fecharModal(); render(); }
+    };
+  }
+
+  function abrirModalAtendente(sid, iid){
+    if (!isAdmin()) return;
+    const store = lerStore(); const s = achaSetor(store, sid); if (!s) return;
+    const a = iid ? (s.atendentes||[]).find(x => x.id === iid) : null;
+    abrirModal(`
+      <h3>${a ? "Editar atendente" : "Adicionar atendente"}</h3>
+      <p class="modal-hint">Setor: <b>${esc(s.nome)}</b></p>
+      <div class="modal-field"><label>Nome do atendente</label><input id="riANome" maxlength="80" placeholder="ex: Maria Souza" value="${esc(a ? a.nome : "")}"></div>
+      <div class="modal-field"><label>Ramal individual</label><input id="riARamal" maxlength="20" inputmode="numeric" placeholder="ex: 7181" value="${esc(a ? a.ramal : "")}"></div>
+      <div class="modal-actions">
+        ${a ? "" : `<button class="modal-btn secondary" id="riSalvarMais">💾 Salvar e adicionar outro</button>`}
+        <button class="modal-btn secondary" id="riCancelar">Cancelar</button>
+        <button class="modal-btn primary" id="riSalvarAt">💾 Salvar</button>
+      </div>`, "riANome");
+    const box = document.getElementById("riModalBody");
+    box.querySelector("#riCancelar").onclick = fecharModal;
+    const salvar = (continuar) => {
+      const nome = document.getElementById("riANome").value.trim();
+      const ramal = document.getElementById("riARamal").value.trim();
+      if (!nome) { G.toast("Informe o nome do atendente.", "err"); return; }
+      const st = clone(lerStore()); const x = achaSetor(st, sid); if (!x) return;
+      x.atendentes = x.atendentes || [];
+      if (iid) { const y = x.atendentes.find(z => z.id === iid); if (!y) return; y.nome = nome; y.ramal = ramal; }
+      else x.atendentes.push({ id: uid(), nome, ramal });
+      x.atendentes.sort((p,q)=> p.nome.localeCompare(q.nome, "pt-BR", { sensitivity:"base" }));
+      if (!persistir(st, iid ? "✅ Atendente atualizado." : "✅ Atendente adicionado.")) return;
+      render();
+      if (continuar) { document.getElementById("riANome").value = ""; document.getElementById("riARamal").value = ""; document.getElementById("riANome").focus(); }
+      else fecharModal();
+    };
+    box.querySelector("#riSalvarAt").onclick = () => salvar(false);
+    const mais = box.querySelector("#riSalvarMais"); if (mais) mais.onclick = () => salvar(true);
+  }
+
+  /* ─────────────── Sincronização (detecta dados novos vindos do Sheets) ─────────────── */
+  let _ultimaAssinatura = "";
+  function assinatura(){ try { return JSON.stringify(lerStore().setores) + "|" + G.role(); } catch(e){ return ""; } }
+  setInterval(() => {
+    if (!visivel()) return;
+    const m = document.getElementById("ramaisModal");
+    if (m && m.classList.contains("open")) return;                 // não atrapalha quem está editando
+    const ae = document.activeElement;
+    if (ae && ae.id === "riBusca" && ae.value) { /* busca ativa: tudo bem re-renderizar */ }
+    if (assinatura() !== _ultimaAssinatura) render();
+  }, 1500);
+
+  /* ─────────────── Inicialização ─────────────── */
+  montar();
+  integrarNavegacao();
+  window.__ramaisInternos = { versao: VERSAO, render, dados: () => clone(lerStore()) };
+
+  // Se a página foi recarregada com a aba Ramais ativa, reabre nela após o carregamento.
+  try {
+    if (sessionStorage.getItem("activeTab") === "ramais") {
+      let tentativas = 0;
+      const t = setInterval(() => {
+        tentativas++;
+        const app = document.getElementById("appWrap");
+        if (app && app.style.display !== "none" && G.synced()) {
+          clearInterval(t);
+          showTab("ramais", document.getElementById("tabRamais"));
+        } else if (tentativas > 60) clearInterval(t);
+      }, 500);
+    }
+  } catch(e){}
+
+  // Se já estiver logado e sincronizado como AdminPro, grava os setores iniciais (só na 1ª vez).
+  semearSeNecessario();
+  console.log("✅ Aba Ramais Internos instalada.", isAdmin() ? "(modo AdminPro: edição liberada)" : "(modo leitura)");
+})();
+</script>
 </body>
 </html>
