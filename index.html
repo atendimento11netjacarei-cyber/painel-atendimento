@@ -7196,15 +7196,16 @@ LEMBRETE FINAL ANTES DE RESPONDER: responda apenas com base nos dados acima. Se 
 }
 
 </script>
-  /* ═══════════════════════════════════════════════════════════════════
+<script>
+/* ═══════════════════════════════════════════════════════════════════
    ABA "RAMAIS INTERNOS" — Painel de Atendimento
    • Dados salvos em homeConfig.ramaisInternos → mesmo canal já usado
      pelo painel ("salvar_home_config" no Google Sheets / Apps Script).
    • Sincroniza entre todos os usuários/computadores pelo polling
      existente (a cada 20s) — sem localStorage, sem banco paralelo.
    • Somente AdminPro (currentRole === "adminpro") pode editar.
-   • Pode ser colado no Console (F12) OU dentro de <script>...</script>
-     logo antes de </body> no index.html (instalação definitiva).
+   • Pode ser colado no Console (F12) OU no final do index.html,
+     dentro de uma tag script (instalação definitiva).
    ═══════════════════════════════════════════════════════════════════ */
 (function RamaisInternos(){
   "use strict";
